@@ -41,7 +41,7 @@ public class ConversationTaskTurnDO {
     @TableId(type = IdType.ASSIGN_ID)
     private String id;
 
-    private String taskId;
+    private String conversationTaskId;
 
     private String conversationId;
 

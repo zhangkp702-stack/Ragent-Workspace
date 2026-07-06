@@ -30,6 +30,7 @@ public interface ConversationMessageService {
      * 新增对话消息
      *
      * @param conversationMessage 消息内容
+     * @return 新增消息ID
      */
     String addMessage(ConversationMessageBO conversationMessage);
 
@@ -43,6 +44,16 @@ public interface ConversationMessageService {
      * @return 对话消息列表
      */
     List<ConversationMessageVO> listMessages(String conversationId, String userId, Integer limit, ConversationMessageOrder order);
+
+    /**
+     * 根据消息 ID 批量获取指定会话的消息，返回顺序与 messageIds 一致
+     *
+     * @param conversationId 会话ID
+     * @param userId         用户ID
+     * @param messageIds     消息ID列表
+     * @return 会话消息列表
+     */
+    List<ConversationMessageVO> listMessagesByIds(String conversationId, String userId, List<String> messageIds);
 
     /**
      * 添加对话摘要

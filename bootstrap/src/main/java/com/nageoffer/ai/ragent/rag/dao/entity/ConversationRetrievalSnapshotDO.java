@@ -45,7 +45,7 @@ public class ConversationRetrievalSnapshotDO {
 
     private String userId;
 
-    private String taskId;
+    private String conversationTaskId;
 
     private String taskTurnId;
 

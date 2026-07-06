@@ -3,14 +3,14 @@
 
 CREATE TABLE IF NOT EXISTS t_conversation_task (
     id                 VARCHAR(20)  NOT NULL PRIMARY KEY,
-    task_id            VARCHAR(20)  NOT NULL,
+    conversation_task_id VARCHAR(20)  NOT NULL,
     conversation_id    VARCHAR(20)  NOT NULL,
     user_id            VARCHAR(20)  NOT NULL,
     topic_key          VARCHAR(128),
     goal               VARCHAR(512),
     status             VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE',
     is_active          SMALLINT     NOT NULL DEFAULT 0,
-    parent_task_id     VARCHAR(20),
+    parent_conversation_task_id VARCHAR(20),
     last_turn_id       VARCHAR(20),
     last_snapshot_id   VARCHAR(20),
     last_message_id    VARCHAR(20),
@@ -20,22 +20,59 @@ CREATE TABLE IF NOT EXISTS t_conversation_task (
     create_time        TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time        TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted            SMALLINT     NOT NULL DEFAULT 0,
-    CONSTRAINT uk_conversation_task UNIQUE (task_id)
+    CONSTRAINT uk_conversation_task_id UNIQUE (conversation_task_id)
 );
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 't_conversation_task'
+          AND column_name = 'task_id'
+    ) THEN
+        ALTER TABLE t_conversation_task RENAME COLUMN task_id TO conversation_task_id;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 't_conversation_task'
+          AND column_name = 'parent_task_id'
+    ) THEN
+        ALTER TABLE t_conversation_task RENAME COLUMN parent_task_id TO parent_conversation_task_id;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = current_schema()
+          AND t.relname = 't_conversation_task'
+          AND c.conname = 'uk_conversation_task'
+    ) THEN
+        ALTER TABLE t_conversation_task RENAME CONSTRAINT uk_conversation_task TO uk_conversation_task_id;
+    END IF;
+END
+$$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uk_conversation_active_task ON t_conversation_task (conversation_id, user_id) WHERE is_active = 1 AND deleted = 0;
 CREATE INDEX IF NOT EXISTS idx_conversation_task_user_time ON t_conversation_task (conversation_id, user_id, last_active_time);
 CREATE INDEX IF NOT EXISTS idx_conversation_task_topic ON t_conversation_task (conversation_id, user_id, topic_key);
 CREATE INDEX IF NOT EXISTS idx_conversation_task_state ON t_conversation_task USING gin(state_json);
 COMMENT ON TABLE t_conversation_task IS '会话工作记忆任务表';
 COMMENT ON COLUMN t_conversation_task.id IS '主键ID';
-COMMENT ON COLUMN t_conversation_task.task_id IS '任务ID';
+COMMENT ON COLUMN t_conversation_task.conversation_task_id IS '会话工作记忆任务ID，与流式执行任务ID含义不同';
 COMMENT ON COLUMN t_conversation_task.conversation_id IS '会话ID';
 COMMENT ON COLUMN t_conversation_task.user_id IS '用户ID';
 COMMENT ON COLUMN t_conversation_task.topic_key IS '任务主题标识';
 COMMENT ON COLUMN t_conversation_task.goal IS '任务目标';
 COMMENT ON COLUMN t_conversation_task.status IS '任务状态：ACTIVE-进行中，FINISHED-已完成，ABANDONED-已放弃';
 COMMENT ON COLUMN t_conversation_task.is_active IS '是否当前活跃任务 0：否 1：是';
-COMMENT ON COLUMN t_conversation_task.parent_task_id IS '父任务ID，用于记录任务切换或派生关系';
+COMMENT ON COLUMN t_conversation_task.parent_conversation_task_id IS '父会话工作记忆任务ID，用于记录任务切换或派生关系';
 COMMENT ON COLUMN t_conversation_task.last_turn_id IS '最近一轮任务记录ID';
 COMMENT ON COLUMN t_conversation_task.last_snapshot_id IS '最近一次检索快照ID';
 COMMENT ON COLUMN t_conversation_task.last_message_id IS '最近一条关联消息ID';
@@ -48,7 +85,7 @@ COMMENT ON COLUMN t_conversation_task.deleted IS '是否删除 0：正常 1：�
 
 CREATE TABLE IF NOT EXISTS t_conversation_task_turn (
     id                   VARCHAR(20)  NOT NULL PRIMARY KEY,
-    task_id              VARCHAR(20)  NOT NULL,
+    conversation_task_id VARCHAR(20)  NOT NULL,
     conversation_id      VARCHAR(20)  NOT NULL,
     user_id              VARCHAR(20)  NOT NULL,
     user_message_id      VARCHAR(20),
@@ -64,12 +101,28 @@ CREATE TABLE IF NOT EXISTS t_conversation_task_turn (
     update_time          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted              SMALLINT     NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_task_turn_task_time ON t_conversation_task_turn (task_id, create_time);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 't_conversation_task_turn'
+          AND column_name = 'task_id'
+    ) THEN
+        ALTER TABLE t_conversation_task_turn RENAME COLUMN task_id TO conversation_task_id;
+    END IF;
+END
+$$;
+
+ALTER INDEX IF EXISTS idx_task_turn_task_time RENAME TO idx_task_turn_conversation_task_time;
+CREATE INDEX IF NOT EXISTS idx_task_turn_conversation_task_time ON t_conversation_task_turn (conversation_task_id, create_time);
 CREATE INDEX IF NOT EXISTS idx_task_turn_conversation_time ON t_conversation_task_turn (conversation_id, user_id, create_time);
 CREATE INDEX IF NOT EXISTS idx_task_turn_state ON t_conversation_task_turn USING gin(turn_state_json);
 COMMENT ON TABLE t_conversation_task_turn IS '会话工作记忆任务轮次表';
 COMMENT ON COLUMN t_conversation_task_turn.id IS '主键ID';
-COMMENT ON COLUMN t_conversation_task_turn.task_id IS '任务ID';
+COMMENT ON COLUMN t_conversation_task_turn.conversation_task_id IS '会话工作记忆任务ID，与流式执行任务ID含义不同';
 COMMENT ON COLUMN t_conversation_task_turn.conversation_id IS '会话ID';
 COMMENT ON COLUMN t_conversation_task_turn.user_id IS '用户ID';
 COMMENT ON COLUMN t_conversation_task_turn.user_message_id IS '用户消息ID';
@@ -89,7 +142,7 @@ CREATE TABLE IF NOT EXISTS t_conversation_retrieval_snapshot (
     id                       VARCHAR(20)  NOT NULL PRIMARY KEY,
     conversation_id          VARCHAR(20)  NOT NULL,
     user_id                  VARCHAR(20)  NOT NULL,
-    task_id                  VARCHAR(20)  NOT NULL,
+    conversation_task_id     VARCHAR(20)  NOT NULL,
     task_turn_id             VARCHAR(20)  NOT NULL,
     retrieval_mode           VARCHAR(32)  NOT NULL,
     query_text               TEXT,
@@ -102,7 +155,23 @@ CREATE TABLE IF NOT EXISTS t_conversation_retrieval_snapshot (
     create_time              TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted                  SMALLINT     NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_retrieval_snapshot_task_time ON t_conversation_retrieval_snapshot (task_id, create_time);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 't_conversation_retrieval_snapshot'
+          AND column_name = 'task_id'
+    ) THEN
+        ALTER TABLE t_conversation_retrieval_snapshot RENAME COLUMN task_id TO conversation_task_id;
+    END IF;
+END
+$$;
+
+ALTER INDEX IF EXISTS idx_retrieval_snapshot_task_time RENAME TO idx_retrieval_snapshot_conversation_task_time;
+CREATE INDEX IF NOT EXISTS idx_retrieval_snapshot_conversation_task_time ON t_conversation_retrieval_snapshot (conversation_task_id, create_time);
 CREATE INDEX IF NOT EXISTS idx_retrieval_snapshot_turn ON t_conversation_retrieval_snapshot (task_turn_id);
 CREATE INDEX IF NOT EXISTS idx_retrieval_snapshot_conversation_time ON t_conversation_retrieval_snapshot (conversation_id, user_id, create_time);
 CREATE INDEX IF NOT EXISTS idx_retrieval_snapshot_refs ON t_conversation_retrieval_snapshot USING gin(result_refs_json);
@@ -110,7 +179,7 @@ COMMENT ON TABLE t_conversation_retrieval_snapshot IS '会话检索快照表';
 COMMENT ON COLUMN t_conversation_retrieval_snapshot.id IS '主键ID';
 COMMENT ON COLUMN t_conversation_retrieval_snapshot.conversation_id IS '会话ID';
 COMMENT ON COLUMN t_conversation_retrieval_snapshot.user_id IS '用户ID';
-COMMENT ON COLUMN t_conversation_retrieval_snapshot.task_id IS '任务ID';
+COMMENT ON COLUMN t_conversation_retrieval_snapshot.conversation_task_id IS '会话工作记忆任务ID，与流式执行任务ID含义不同';
 COMMENT ON COLUMN t_conversation_retrieval_snapshot.task_turn_id IS '任务轮次ID';
 COMMENT ON COLUMN t_conversation_retrieval_snapshot.retrieval_mode IS '检索模式：FULL-全量检索，INCREMENTAL-增量检索，REUSE-复用历史检索';
 COMMENT ON COLUMN t_conversation_retrieval_snapshot.query_text IS '实际检索问题';
