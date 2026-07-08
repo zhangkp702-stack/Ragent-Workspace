@@ -31,6 +31,7 @@ import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.rag.core.memory.ConversationMemoryService;
 import lombok.extern.slf4j.Slf4j;
 import com.nageoffer.ai.ragent.rag.service.ConversationGroupService;
+import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
 
 import java.util.Optional;
 
@@ -47,6 +48,8 @@ public class StreamChatEventHandler implements StreamCallback {
     private final String taskId;
     private final String userId;
     private final StreamTaskManager taskManager;
+    private final ConversationTaskTurnService conversationTaskTurnService;
+    private String taskTurnId;
 
     // 用于控制模型生成的 token 数量，避免一次生成过长的 token 导致性能问题
     private final int messageChunkSize;
@@ -75,6 +78,7 @@ public class StreamChatEventHandler implements StreamCallback {
         this.taskId = params.getTaskId();
         this.userId = UserContext.getUserId();
         this.taskManager = params.getTaskManager();
+        this.conversationTaskTurnService = params.getConversationTaskTurnService();
 
         // 计算配置
         this.messageChunkSize = resolveMessageChunkSize(params.getModelProperties());
@@ -82,6 +86,15 @@ public class StreamChatEventHandler implements StreamCallback {
 
         // 初始化（发送初始事件、注册任务）
         initialize();
+    }
+
+    /**
+     * 绑定会话工作记忆任务轮次，用于流式回答完成或失败后回写处理状态。
+     *
+     * @param taskTurnId 会话工作记忆任务轮次ID
+     */
+    public void bindTaskTurn(String taskTurnId) {
+        this.taskTurnId = taskTurnId;
     }
 
     /**
@@ -131,8 +144,10 @@ public class StreamChatEventHandler implements StreamCallback {
                 String thinkingContent = thinking.isEmpty() ? null : thinking.toString();
                 ChatMessage message = ChatMessage.assistant(content, thinkingContent, resolveThinkingDuration());
                 messageId = memoryService.append(conversationId, userId, message);
+                markTaskTurnSuccess(messageId);
             } catch (Exception e) {
                 log.error("取消时持久化消息失败，conversationId：{}", conversationId, e);
+                markTaskTurnFailed(e.getMessage());
             }
         }
         String title = resolveTitleForEvent();
@@ -186,8 +201,10 @@ public class StreamChatEventHandler implements StreamCallback {
             ChatMessage message = ChatMessage.assistant(answer.toString(), thinkingContent, resolveThinkingDuration());
             // 追加消息
             messageId = memoryService.append(conversationId, userId, message);
+            markTaskTurnSuccess(messageId);
         } catch (Exception e) {
             log.error("对话完成时持久化消息失败，conversationId：{}", conversationId, e);
+            markTaskTurnFailed(e.getMessage());
         }
         String title = resolveTitleForEvent();
         String messageIdText = StrUtil.isBlank(messageId) ? null : messageId;
@@ -202,8 +219,33 @@ public class StreamChatEventHandler implements StreamCallback {
         if (taskManager.isCancelled(taskId)) {
             return;
         }
+        markTaskTurnFailed(t == null ? null : t.getMessage());
         taskManager.unregister(taskId);
         sender.fail(t);
+    }
+
+    /**
+     * 将会话工作记忆任务轮次标记为成功，并记录助手消息ID。
+     *
+     * @param assistantMessageId 助手消息ID
+     */
+    private void markTaskTurnSuccess(String assistantMessageId) {
+        if (conversationTaskTurnService == null || StrUtil.isBlank(taskTurnId)) {
+            return;
+        }
+        conversationTaskTurnService.markSuccess(taskTurnId, assistantMessageId);
+    }
+
+    /**
+     * 将会话工作记忆任务轮次标记为失败，并记录错误信息。
+     *
+     * @param errorMessage 错误信息
+     */
+    private void markTaskTurnFailed(String errorMessage) {
+        if (conversationTaskTurnService == null || StrUtil.isBlank(taskTurnId)) {
+            return;
+        }
+        conversationTaskTurnService.markFailed(taskTurnId, errorMessage);
     }
 
     private void sendChunked(String type, String content) {

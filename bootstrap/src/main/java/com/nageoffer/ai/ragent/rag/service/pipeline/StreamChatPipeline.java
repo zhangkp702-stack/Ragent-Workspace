@@ -19,8 +19,10 @@ package com.nageoffer.ai.ragent.rag.service.pipeline;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
+import com.google.gson.Gson;
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
 import com.nageoffer.ai.ragent.framework.convention.ChatRequest;
+import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
 import com.nageoffer.ai.ragent.infra.chat.LLMService;
 import com.nageoffer.ai.ragent.infra.chat.StreamCallback;
 import com.nageoffer.ai.ragent.infra.chat.StreamCancellationHandle;
@@ -35,19 +37,25 @@ import com.nageoffer.ai.ragent.rag.core.prompt.RAGPromptService;
 import com.nageoffer.ai.ragent.rag.core.retrieve.RetrievalPipeline;
 import com.nageoffer.ai.ragent.rag.core.rewrite.QueryRewriteService;
 import com.nageoffer.ai.ragent.rag.core.rewrite.RewriteResult;
+import com.nageoffer.ai.ragent.rag.dao.entity.ConversationRetrievalSnapshotDO;
 import com.nageoffer.ai.ragent.rag.dao.entity.ConversationTaskDO;
 import com.nageoffer.ai.ragent.rag.dto.IntentGroup;
 import com.nageoffer.ai.ragent.rag.dto.RetrievalContext;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
-import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
 import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
+import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
+import com.nageoffer.ai.ragent.rag.service.handler.StreamChatEventHandler;
 import com.nageoffer.ai.ragent.rag.service.handler.StreamTaskManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static com.nageoffer.ai.ragent.rag.constant.RAGConstant.CHAT_SYSTEM_PROMPT_PATH;
 import static com.nageoffer.ai.ragent.rag.constant.RAGConstant.DEFAULT_TOP_K;
@@ -64,6 +72,8 @@ import static com.nageoffer.ai.ragent.rag.constant.RAGConstant.DEFAULT_TOP_K;
 @Service
 @RequiredArgsConstructor
 public class StreamChatPipeline {
+
+    private static final Gson GSON = new Gson();
 
     private final ConversationMemoryService memoryService;
     private final QueryRewriteService queryRewriteService;
@@ -84,6 +94,7 @@ public class StreamChatPipeline {
         // 加载上下文对话历史
         loadMemory(ctx);
         loadWorkingMemory(ctx);
+        bindTaskTurnCallback(ctx);
         // 重写用户问题 调用大模型  chat
         rewriteQuery(ctx);
         // 意图识别调用大模型  chat
@@ -221,7 +232,9 @@ public class StreamChatPipeline {
     }
     // 检索知识库相关文档
     private RetrievalContext retrieve(StreamChatContext ctx) {
-        return retrievalPipeline.retrieve(ctx.getSubIntents(), DEFAULT_TOP_K);
+        RetrievalContext retrievalCtx = retrievalPipeline.retrieve(ctx.getSubIntents(), DEFAULT_TOP_K);
+        saveRetrievalSnapshot(ctx, retrievalCtx);
+        return retrievalCtx;
     }
     // 如果检索到的文档为空，就返回空文档
     private boolean handleEmptyRetrieval(StreamChatContext ctx, RetrievalContext retrievalCtx) {
@@ -265,6 +278,155 @@ public class StreamChatPipeline {
             return null;
         }
         return new ChatMessage(role, message.getContent());
+    }
+
+    /**
+     * 将任务轮次ID绑定到流式事件处理器，用于回答完成或失败后回写任务轮次状态。
+     *
+     * @param ctx 流式对话上下文
+     */
+    private void bindTaskTurnCallback(StreamChatContext ctx) {
+        if (StrUtil.isBlank(ctx.getTaskTurnId())) {
+            return;
+        }
+        if (ctx.getCallback() instanceof StreamChatEventHandler eventHandler) {
+            eventHandler.bindTaskTurn(ctx.getTaskTurnId());
+        }
+    }
+
+    /**
+     * 保存本轮检索快照，并同步记录任务轮次的检索模式。
+     *
+     * @param ctx          流式对话上下文
+     * @param retrievalCtx 检索上下文
+     */
+    private void saveRetrievalSnapshot(StreamChatContext ctx, RetrievalContext retrievalCtx) {
+        if (StrUtil.hasBlank(ctx.getConversationTaskId(), ctx.getTaskTurnId())) {
+            return;
+        }
+        String retrievalMode = resolveRetrievalMode(retrievalCtx);
+        conversationTaskTurnService.updateRetrievalMode(ctx.getTaskTurnId(), retrievalMode);
+        List<Map<String, Object>> resultRefs = resolveResultRefs(retrievalCtx);
+
+        ConversationRetrievalSnapshotDO snapshot = ConversationRetrievalSnapshotDO.builder()
+                .conversationId(ctx.getConversationId())
+                .userId(ctx.getUserId())
+                .conversationTaskId(ctx.getConversationTaskId())
+                .taskTurnId(ctx.getTaskTurnId())
+                .retrievalMode(retrievalMode)
+                .queryText(ctx.getQuestion())
+                .rewriteQuestion(ctx.getRewriteResult() == null ? null : ctx.getRewriteResult().rewrittenQuestion())
+                .kbIdsJson(GSON.toJson(resolveKbIds(ctx.getSubIntents())))
+                .intentIdsJson(GSON.toJson(resolveIntentIds(ctx.getSubIntents())))
+                .resultRefsJson(GSON.toJson(resultRefs))
+                .reusedSnapshotIdsJson(GSON.toJson(List.of()))
+                .retrievalSummary(buildRetrievalSummary(retrievalMode, resultRefs.size()))
+                .build();
+        workingMemoryService.saveConversationRetrievalSnapshot(snapshot);
+    }
+
+    /**
+     * 根据检索上下文判断本轮检索模式。
+     *
+     * @param retrievalCtx 检索上下文
+     * @return 检索模式
+     */
+    private String resolveRetrievalMode(RetrievalContext retrievalCtx) {
+        if (retrievalCtx == null || retrievalCtx.isEmpty()) {
+            return "EMPTY";
+        }
+        if (retrievalCtx.hasKb() && retrievalCtx.hasMcp()) {
+            return "KB_MCP";
+        }
+        return retrievalCtx.hasKb() ? "KB" : "MCP";
+    }
+
+    /**
+     * 提取本轮命中的知识库ID列表。
+     *
+     * @param subIntents 子问题意图列表
+     * @return 知识库ID列表
+     */
+    private List<String> resolveKbIds(List<SubQuestionIntent> subIntents) {
+        if (CollUtil.isEmpty(subIntents)) {
+            return List.of();
+        }
+        Set<String> kbIds = new LinkedHashSet<>();
+        for (SubQuestionIntent subIntent : subIntents) {
+            if (subIntent == null || CollUtil.isEmpty(subIntent.nodeScores())) {
+                continue;
+            }
+            subIntent.nodeScores().stream()
+                    .filter(nodeScore -> nodeScore != null && nodeScore.getNode() != null)
+                    .map(nodeScore -> nodeScore.getNode().getKbId())
+                    .filter(StrUtil::isNotBlank)
+                    .forEach(kbIds::add);
+        }
+        return new ArrayList<>(kbIds);
+    }
+
+    /**
+     * 提取本轮参与检索的意图ID列表。
+     *
+     * @param subIntents 子问题意图列表
+     * @return 意图ID列表
+     */
+    private List<String> resolveIntentIds(List<SubQuestionIntent> subIntents) {
+        if (CollUtil.isEmpty(subIntents)) {
+            return List.of();
+        }
+        Set<String> intentIds = new LinkedHashSet<>();
+        for (SubQuestionIntent subIntent : subIntents) {
+            if (subIntent == null || CollUtil.isEmpty(subIntent.nodeScores())) {
+                continue;
+            }
+            subIntent.nodeScores().stream()
+                    .filter(nodeScore -> nodeScore != null && nodeScore.getNode() != null)
+                    .map(nodeScore -> nodeScore.getNode().getId())
+                    .filter(StrUtil::isNotBlank)
+                    .forEach(intentIds::add);
+        }
+        return new ArrayList<>(intentIds);
+    }
+
+    /**
+     * 提取本轮检索命中的 chunk 引用。
+     *
+     * @param retrievalCtx 检索上下文
+     * @return chunk 引用列表
+     */
+    private List<Map<String, Object>> resolveResultRefs(RetrievalContext retrievalCtx) {
+        if (retrievalCtx == null || CollUtil.isEmpty(retrievalCtx.getIntentChunks())) {
+            return List.of();
+        }
+        List<Map<String, Object>> refs = new ArrayList<>();
+        for (Map.Entry<String, List<RetrievedChunk>> entry : retrievalCtx.getIntentChunks().entrySet()) {
+            if (CollUtil.isEmpty(entry.getValue())) {
+                continue;
+            }
+            for (RetrievedChunk chunk : entry.getValue()) {
+                if (chunk == null || StrUtil.isBlank(chunk.getId())) {
+                    continue;
+                }
+                Map<String, Object> ref = new LinkedHashMap<>();
+                ref.put("intentId", entry.getKey());
+                ref.put("chunkId", chunk.getId());
+                ref.put("score", chunk.getScore());
+                refs.add(ref);
+            }
+        }
+        return refs;
+    }
+
+    /**
+     * 构建检索快照摘要，便于排查本轮是否命中证据。
+     *
+     * @param retrievalMode 检索模式
+     * @param chunkCount    命中 chunk 数量
+     * @return 检索摘要
+     */
+    private String buildRetrievalSummary(String retrievalMode, int chunkCount) {
+        return "mode=" + retrievalMode + ", chunks=" + chunkCount;
     }
 
     private void streamRagResponse(StreamChatContext ctx, RetrievalContext retrievalCtx) {
