@@ -18,6 +18,13 @@
 package com.nageoffer.ai.ragent.rag.service.impl;
 
 import cn.hutool.core.util.StrUtil;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
+import com.nageoffer.ai.ragent.framework.convention.ChatRequest;
+import com.nageoffer.ai.ragent.infra.chat.LLMService;
+import com.nageoffer.ai.ragent.infra.util.LLMResponseCleaner;
 import com.nageoffer.ai.ragent.rag.controller.vo.ConversationMessageVO;
 import com.nageoffer.ai.ragent.rag.dao.entity.ConversationRetrievalSnapshotDO;
 import com.nageoffer.ai.ragent.rag.dao.entity.ConversationTaskDO;
@@ -28,17 +35,16 @@ import com.nageoffer.ai.ragent.rag.service.ConversationTaskService;
 import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
 import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * 会话工作记忆编排服务实现类。
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ConversationWorkingMemoryServiceImpl implements ConversationWorkingMemoryService {
@@ -48,16 +54,13 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
     private static final int CANDIDATE_RECENT_QUESTION_LIMIT = 5;
     private static final int TOPIC_KEY_MAX_LENGTH = 128;
     private static final int GOAL_MAX_LENGTH = 512;
-    private static final double TASK_MATCH_THRESHOLD = 0.25D;
-    private static final double ACTIVE_TASK_SCORE_BONUS = 0.03D;
-    private static final Set<String> STOP_TOKENS = Set.of(
-            "什么", "怎么", "如何", "哪些", "需要", "可以", "这个", "那个", "刚才", "一下", "还有", "是否"
-    );
+    private static final double LLM_MATCH_CONFIDENCE_THRESHOLD = 0.7D;
 
     private final ConversationTaskService conversationTaskService;
     private final ConversationTaskTurnService conversationTaskTurnService;
     private final ConversationRetrievalSnapshotService conversationRetrievalSnapshotService;
     private final ConversationMessageService conversationMessageService;
+    private final LLMService llmService;
 
     /**
      * 优先复用当前活跃任务；没有活跃任务时创建并激活新任务。
@@ -187,146 +190,187 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
      * @return 匹配到的任务，未达到阈值时返回 null
      */
     private ConversationTaskDO selectMatchedTask(String conversationId, String userId, String questionText) {
+        List<TaskCandidate> candidates = loadTaskCandidates(conversationId, userId);
+        if (candidates.isEmpty()) {
+            return null;
+        }
+
+        try {
+            String raw = llmService.chat(buildTaskMatchRequest(questionText, candidates));
+            TaskMatchDecision decision = parseTaskMatchDecision(raw);
+            if (decision == null || !"SELECT".equalsIgnoreCase(decision.action())) {
+                return null;
+            }
+            if (decision.confidence() < LLM_MATCH_CONFIDENCE_THRESHOLD) {
+                return null;
+            }
+            return findCandidateTask(candidates, decision.conversationTaskId());
+        } catch (Exception e) {
+            log.warn("会话工作记忆任务归属 LLM 判断失败，降级创建新任务 - conversationId={}, userId={}",
+                    conversationId, userId, e);
+            return null;
+        }
+    }
+
+    /**
+     * 加载当前会话最近任务及每个任务最近用户问题。
+     *
+     * @param conversationId 会话ID
+     * @param userId         用户ID
+     * @return 候选任务列表
+     */
+    private List<TaskCandidate> loadTaskCandidates(String conversationId, String userId) {
         List<ConversationTaskDO> recentTasks = conversationTaskService.listRecentTasks(
                 conversationId, userId, CANDIDATE_TASK_LIMIT);
         if (recentTasks.isEmpty()) {
-            return null;
+            return List.of();
         }
 
-        ConversationTaskDO matchedTask = null;
-        double matchedScore = 0D;
-        for (ConversationTaskDO recentTask : recentTasks) {
-            double score = calculateTaskScore(recentTask, conversationId, userId, questionText);
-            if (score > matchedScore) {
-                matchedTask = recentTask;
-                matchedScore = score;
-            }
+        List<TaskCandidate> candidates = new ArrayList<>(recentTasks.size());
+        for (ConversationTaskDO task : recentTasks) {
+            List<String> recentQuestions = conversationTaskTurnService.listRecentTurns(
+                            task.getConversationTaskId(), conversationId, userId, CANDIDATE_RECENT_QUESTION_LIMIT)
+                    .stream()
+                    .map(ConversationTaskTurnDO::getQuestionText)
+                    .filter(StrUtil::isNotBlank)
+                    .toList();
+            candidates.add(new TaskCandidate(task, recentQuestions));
         }
-        if (matchedScore < TASK_MATCH_THRESHOLD) {
-            return null;
-        }
-        return matchedTask;
+        return candidates;
     }
 
     /**
-     * 根据任务基础信息和最近用户问题计算任务匹配分。
-     *
-     * @param task           候选任务
-     * @param conversationId 会话ID
-     * @param userId         用户ID
-     * @param questionText   用户原始问题
-     * @return 匹配分
-     */
-    private double calculateTaskScore(ConversationTaskDO task, String conversationId, String userId,
-                                      String questionText) {
-        double score = 0D;
-        score = Math.max(score, calculateTextSimilarity(questionText, task.getTopicKey()) * 0.8D);
-        score = Math.max(score, calculateTextSimilarity(questionText, task.getGoal()) * 0.9D);
-        score = Math.max(score, calculateTextSimilarity(questionText, task.getStateJson()) * 0.7D);
-
-        List<ConversationTaskTurnDO> recentTurns = conversationTaskTurnService.listRecentTurns(
-                task.getConversationTaskId(), conversationId, userId, CANDIDATE_RECENT_QUESTION_LIMIT);
-        for (ConversationTaskTurnDO recentTurn : recentTurns) {
-            score = Math.max(score, calculateTextSimilarity(questionText, recentTurn.getQuestionText()));
-        }
-
-        if (task.getIsActive() != null && task.getIsActive() == 1 && score > 0D) {
-            score += ACTIVE_TASK_SCORE_BONUS;
-        }
-        return score;
-    }
-
-    /**
-     * 计算用户问题中的关键词在候选文本中的命中比例。
+     * 构造任务归属判断的大模型请求。
      *
      * @param questionText 用户原始问题
-     * @param targetText   候选文本
-     * @return 相似度分数
+     * @param candidates   候选任务列表
+     * @return 大模型请求
      */
-    private double calculateTextSimilarity(String questionText, String targetText) {
-        Set<String> questionTokens = extractTokens(questionText);
-        Set<String> targetTokens = extractTokens(targetText);
-        if (questionTokens.isEmpty() || targetTokens.isEmpty()) {
-            return 0D;
-        }
+    private ChatRequest buildTaskMatchRequest(String questionText, List<TaskCandidate> candidates) {
+        String systemPrompt = """
+                你是会话工作记忆任务归属判断器。
+                你的任务是判断“当前用户问题”是否属于候选任务中的某一个。
+                判断时优先参考候选任务的 topicKey、goal、stateJson 和最近用户问题。
+                不要因为某个任务是 active 就默认选择它。
+                如果无法明确判断，或者置信度不足，请返回 CREATE_NEW。
 
-        Set<String> matchedTokens = new HashSet<>(questionTokens);
-        matchedTokens.retainAll(targetTokens);
-        return (double) matchedTokens.size() / questionTokens.size();
+                只允许返回 JSON 对象，不要输出解释性文本：
+                {
+                  "action": "SELECT 或 CREATE_NEW",
+                  "conversationTaskId": "当 action=SELECT 时填写候选任务ID，否则为空字符串",
+                  "confidence": 0.0,
+                  "reason": "简短原因"
+                }
+                """;
+        return ChatRequest.builder()
+                .messages(List.of(
+                        ChatMessage.system(systemPrompt),
+                        ChatMessage.user(buildTaskMatchUserPrompt(questionText, candidates))
+                ))
+                .temperature(0.1D)
+                .topP(0.3D)
+                .thinking(false)
+                .build();
     }
 
     /**
-     * 从文本中提取用于轻量匹配的关键词。
+     * 构造任务归属判断的用户提示词。
      *
-     * @param text 原始文本
-     * @return 关键词集合
+     * @param questionText 用户原始问题
+     * @param candidates   候选任务列表
+     * @return 用户提示词
      */
-    private Set<String> extractTokens(String text) {
-        if (StrUtil.isBlank(text)) {
-            return Set.of();
-        }
-        String normalizedText = text.toLowerCase();
-        Set<String> tokens = new LinkedHashSet<>();
-        StringBuilder word = new StringBuilder();
-        StringBuilder chineseText = new StringBuilder();
-
-        for (int i = 0; i < normalizedText.length(); i++) {
-            char currentChar = normalizedText.charAt(i);
-            if (isChinese(currentChar)) {
-                flushWordToken(word, tokens);
-                chineseText.append(currentChar);
+    private String buildTaskMatchUserPrompt(String questionText, List<TaskCandidate> candidates) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("当前用户问题：\n").append(questionText).append("\n\n");
+        prompt.append("候选任务：\n");
+        for (int i = 0; i < candidates.size(); i++) {
+            TaskCandidate candidate = candidates.get(i);
+            ConversationTaskDO task = candidate.task();
+            prompt.append(i + 1).append(". conversationTaskId=").append(task.getConversationTaskId()).append("\n");
+            prompt.append("   active=").append(task.getIsActive()).append("\n");
+            appendPromptField(prompt, "topicKey", task.getTopicKey());
+            appendPromptField(prompt, "goal", task.getGoal());
+            appendPromptField(prompt, "stateJson", task.getStateJson());
+            prompt.append("   recentQuestions:\n");
+            if (candidate.recentQuestions().isEmpty()) {
+                prompt.append("   - 无\n");
             } else {
-                flushChineseTokens(chineseText, tokens);
-                if (Character.isLetterOrDigit(currentChar)) {
-                    word.append(currentChar);
-                } else {
-                    flushWordToken(word, tokens);
+                for (String question : candidate.recentQuestions()) {
+                    prompt.append("   - ").append(question).append("\n");
                 }
             }
+            prompt.append("\n");
         }
-        flushWordToken(word, tokens);
-        flushChineseTokens(chineseText, tokens);
-        tokens.removeAll(STOP_TOKENS);
-        return tokens;
+        return prompt.toString();
     }
 
     /**
-     * 判断字符是否为中文字符。
+     * 追加提示词字段。
      *
-     * @param currentChar 当前字符
-     * @return 是否为中文字符
+     * @param prompt 提示词
+     * @param name   字段名
+     * @param value  字段值
      */
-    private boolean isChinese(char currentChar) {
-        return Character.UnicodeScript.of(currentChar) == Character.UnicodeScript.HAN;
+    private void appendPromptField(StringBuilder prompt, String name, String value) {
+        prompt.append("   ").append(name).append("=").append(StrUtil.blankToDefault(value, "无")).append("\n");
     }
 
     /**
-     * 写入英文或数字关键词。
+     * 解析大模型返回的任务归属判断结果。
      *
-     * @param word   当前词
-     * @param tokens 关键词集合
+     * @param raw 大模型原始响应
+     * @return 任务归属判断结果，解析失败时返回 null
      */
-    private void flushWordToken(StringBuilder word, Set<String> tokens) {
-        if (word.length() > 1) {
-            tokens.add(word.toString());
+    private TaskMatchDecision parseTaskMatchDecision(String raw) {
+        try {
+            String cleanedRaw = LLMResponseCleaner.stripMarkdownCodeFence(raw);
+            JsonElement root = JsonParser.parseString(cleanedRaw);
+            if (!root.isJsonObject()) {
+                return null;
+            }
+            JsonObject obj = root.getAsJsonObject();
+            String action = getString(obj, "action");
+            String conversationTaskId = getString(obj, "conversationTaskId");
+            double confidence = obj.has("confidence") ? obj.get("confidence").getAsDouble() : 0D;
+            String reason = getString(obj, "reason");
+            return new TaskMatchDecision(action, conversationTaskId, confidence, reason);
+        } catch (Exception e) {
+            log.warn("解析会话工作记忆任务归属 LLM 响应失败，raw={}", raw, e);
+            return null;
         }
-        word.setLength(0);
     }
 
     /**
-     * 将连续中文文本切分成双字关键词。
+     * 从 JSON 对象中读取字符串字段。
      *
-     * @param chineseText 连续中文文本
-     * @param tokens      关键词集合
+     * @param obj  JSON 对象
+     * @param name 字段名
+     * @return 字符串字段值
      */
-    private void flushChineseTokens(StringBuilder chineseText, Set<String> tokens) {
-        if (chineseText.length() == 1) {
-            tokens.add(chineseText.toString());
+    private String getString(JsonObject obj, String name) {
+        if (!obj.has(name) || obj.get(name).isJsonNull()) {
+            return "";
         }
-        for (int i = 0; i < chineseText.length() - 1; i++) {
-            tokens.add(chineseText.substring(i, i + 2));
+        return obj.get(name).getAsString();
+    }
+
+    /**
+     * 根据会话工作记忆任务ID查找候选任务。
+     *
+     * @param candidates         候选任务列表
+     * @param conversationTaskId 会话工作记忆任务ID
+     * @return 匹配的候选任务，不存在时返回 null
+     */
+    private ConversationTaskDO findCandidateTask(List<TaskCandidate> candidates, String conversationTaskId) {
+        if (StrUtil.isBlank(conversationTaskId)) {
+            return null;
         }
-        chineseText.setLength(0);
+        return candidates.stream()
+                .map(TaskCandidate::task)
+                .filter(task -> conversationTaskId.equals(task.getConversationTaskId()))
+                .findFirst()
+                .orElse(null);
     }
 
     /**
@@ -341,5 +385,25 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
             return text;
         }
         return text.substring(0, maxLength);
+    }
+
+    /**
+     * 任务候选上下文。
+     *
+     * @param task            候选任务
+     * @param recentQuestions 最近用户问题
+     */
+    private record TaskCandidate(ConversationTaskDO task, List<String> recentQuestions) {
+    }
+
+    /**
+     * 大模型任务归属判断结果。
+     *
+     * @param action             选择动作
+     * @param conversationTaskId 会话工作记忆任务ID
+     * @param confidence         置信度
+     * @param reason             选择原因
+     */
+    private record TaskMatchDecision(String action, String conversationTaskId, double confidence, String reason) {
     }
 }
