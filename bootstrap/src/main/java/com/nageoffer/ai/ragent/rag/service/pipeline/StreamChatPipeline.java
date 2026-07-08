@@ -24,6 +24,7 @@ import com.nageoffer.ai.ragent.framework.convention.ChatRequest;
 import com.nageoffer.ai.ragent.infra.chat.LLMService;
 import com.nageoffer.ai.ragent.infra.chat.StreamCallback;
 import com.nageoffer.ai.ragent.infra.chat.StreamCancellationHandle;
+import com.nageoffer.ai.ragent.rag.controller.vo.ConversationMessageVO;
 import com.nageoffer.ai.ragent.rag.core.guidance.GuidanceDecision;
 import com.nageoffer.ai.ragent.rag.core.guidance.IntentGuidanceService;
 import com.nageoffer.ai.ragent.rag.core.intent.IntentResolver;
@@ -34,9 +35,12 @@ import com.nageoffer.ai.ragent.rag.core.prompt.RAGPromptService;
 import com.nageoffer.ai.ragent.rag.core.retrieve.RetrievalPipeline;
 import com.nageoffer.ai.ragent.rag.core.rewrite.QueryRewriteService;
 import com.nageoffer.ai.ragent.rag.core.rewrite.RewriteResult;
+import com.nageoffer.ai.ragent.rag.dao.entity.ConversationTaskDO;
 import com.nageoffer.ai.ragent.rag.dto.IntentGroup;
 import com.nageoffer.ai.ragent.rag.dto.RetrievalContext;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
+import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
+import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
 import com.nageoffer.ai.ragent.rag.service.handler.StreamTaskManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -70,6 +74,8 @@ public class StreamChatPipeline {
     private final RAGPromptService promptBuilder;
     private final PromptTemplateLoader promptTemplateLoader;
     private final StreamTaskManager taskManager;
+    private final ConversationWorkingMemoryService workingMemoryService;
+    private final ConversationTaskTurnService conversationTaskTurnService;
 
     /**
      * 执行流式对话管道
@@ -77,6 +83,7 @@ public class StreamChatPipeline {
     public void execute(StreamChatContext ctx) {
         // 加载上下文对话历史
         loadMemory(ctx);
+        loadWorkingMemory(ctx);
         // 重写用户问题 调用大模型  chat
         rewriteQuery(ctx);
         // 意图识别调用大模型  chat
@@ -102,16 +109,45 @@ public class StreamChatPipeline {
     // ==================== 流水线阶段 ====================
     // 加载上下文对话历史
     private void loadMemory(StreamChatContext ctx) {
-        List<ChatMessage> history = memoryService.loadAndAppend(
-                ctx.getConversationId(),
-                ctx.getUserId(),
-                ChatMessage.user(ctx.getQuestion())
-        );
+        List<ChatMessage> history = memoryService.load(ctx.getConversationId(), ctx.getUserId());
+        String userMessageId = memoryService.append(ctx.getConversationId(), ctx.getUserId(), ChatMessage.user(ctx.getQuestion()));
         ctx.setHistory(history);
+        ctx.setUserMessageId(userMessageId);
     }
     // 加载工作记忆上下文
     private void loadWorkingMemory(StreamChatContext ctx) {
+        ConversationTaskDO conversationTask = workingMemoryService.resolveConversationTask(
+                ctx.getConversationId(),
+                ctx.getUserId(),
+                ctx.getQuestion()
+        );
+        if (conversationTask == null || StrUtil.isBlank(conversationTask.getConversationTaskId())) {
+            return;
+        }
 
+        String conversationTaskId = conversationTask.getConversationTaskId();
+        ctx.setConversationTaskId(conversationTaskId);
+
+        String taskTurnId = workingMemoryService.saveConversationTaskTurn(
+                conversationTaskId,
+                ctx.getConversationId(),
+                ctx.getUserId(),
+                ctx.getUserMessageId(),
+                ctx.getQuestion(),
+                null
+        );
+        ctx.setTaskTurnId(taskTurnId);
+
+        List<ConversationMessageVO> taskMessages = workingMemoryService.loadConversationTaskContext(
+                conversationTaskId,
+                ctx.getConversationId(),
+                ctx.getUserId(),
+                6
+        );
+        List<ChatMessage> taskHistory = toChatMessages(taskMessages, ctx.getUserMessageId());
+        if (CollUtil.isNotEmpty(taskHistory)) {
+            ctx.setHistory(taskHistory);
+        }
     }
     // 把用户问题和上下文对话历史，调用大模型重写，返回重写后的主问题和子问题
     private void rewriteQuery(StreamChatContext ctx) {
@@ -125,6 +161,9 @@ public class StreamChatPipeline {
         //)
         RewriteResult rewriteResult = queryRewriteService.rewriteWithSplit(ctx.getQuestion(), ctx.getHistory());
         ctx.setRewriteResult(rewriteResult);
+        if (StrUtil.isNotBlank(ctx.getTaskTurnId())) {
+            conversationTaskTurnService.updateRewriteResult(ctx.getTaskTurnId(), rewriteResult.rewrittenQuestion());
+        }
     }
     // 意图识别，根据重写后的主问题和子问题，判断用户问题属于什么类型
     private void resolveIntents(StreamChatContext ctx) {
@@ -195,6 +234,39 @@ public class StreamChatPipeline {
         return true;
     }
     // 流式生成 RAG 响应
+    /**
+     * 将任务级消息视图转换为大模型上下文消息。
+     *
+     * @param messages         任务级消息视图
+     * @param excludeMessageId 需要排除的消息ID
+     * @return 大模型上下文消息
+     */
+    private List<ChatMessage> toChatMessages(List<ConversationMessageVO> messages, String excludeMessageId) {
+        if (CollUtil.isEmpty(messages)) {
+            return List.of();
+        }
+        return messages.stream()
+                .filter(message -> message != null && StrUtil.isNotBlank(message.getContent()))
+                .filter(message -> !StrUtil.equals(message.getId(), excludeMessageId))
+                .map(this::toChatMessage)
+                .filter(message -> message != null && StrUtil.isNotBlank(message.getContent()))
+                .toList();
+    }
+
+    /**
+     * 将一条任务级消息视图转换为大模型上下文消息。
+     *
+     * @param message 任务级消息视图
+     * @return 大模型上下文消息
+     */
+    private ChatMessage toChatMessage(ConversationMessageVO message) {
+        ChatMessage.Role role = ChatMessage.Role.fromString(message.getRole());
+        if (role != ChatMessage.Role.USER && role != ChatMessage.Role.ASSISTANT) {
+            return null;
+        }
+        return new ChatMessage(role, message.getContent());
+    }
+
     private void streamRagResponse(StreamChatContext ctx, RetrievalContext retrievalCtx) {
         // 聚合所有意图用于 prompt 规划
         IntentGroup mergedGroup = intentResolver.mergeIntentGroup(ctx.getSubIntents());

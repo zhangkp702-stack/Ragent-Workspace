@@ -49,6 +49,15 @@ public class StreamChatContext {
     private List<ChatMessage> history;
 
     @Setter
+    private String userMessageId;
+
+    @Setter
+    private String conversationTaskId;
+
+    @Setter
+    private String taskTurnId;
+
+    @Setter
     private RewriteResult rewriteResult;
 
     @Setter
