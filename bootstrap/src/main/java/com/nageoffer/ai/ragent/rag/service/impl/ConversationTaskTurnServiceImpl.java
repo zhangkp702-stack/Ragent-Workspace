@@ -89,6 +89,35 @@ public class ConversationTaskTurnServiceImpl implements ConversationTaskTurnServ
     }
 
     /**
+     * 查询指定任务最近已完成的轮次，并将数据库倒序结果恢复为时间升序。
+     *
+     * @param conversationTaskId 会话工作记忆任务ID
+     * @param conversationId     会话ID
+     * @param userId             用户ID
+     * @param limit              最大返回数量
+     * @return 最近已完成任务轮次列表
+     */
+    @Override
+    public List<ConversationTaskTurnDO> listRecentCompletedTurns(String conversationTaskId, String conversationId,
+                                                                 String userId, int limit) {
+        if (StrUtil.hasBlank(conversationTaskId, conversationId, userId) || limit <= 0) {
+            return List.of();
+        }
+        List<ConversationTaskTurnDO> records = conversationTaskTurnMapper.selectList(
+                Wrappers.lambdaQuery(ConversationTaskTurnDO.class)
+                        .eq(ConversationTaskTurnDO::getConversationTaskId, conversationTaskId)
+                        .eq(ConversationTaskTurnDO::getConversationId, conversationId)
+                        .eq(ConversationTaskTurnDO::getUserId, userId)
+                        .eq(ConversationTaskTurnDO::getStatus, STATUS_SUCCESS)
+                        .eq(ConversationTaskTurnDO::getDeleted, 0)
+                        .orderByDesc(ConversationTaskTurnDO::getCreateTime)
+                        .last("limit " + limit)
+        );
+        Collections.reverse(records);
+        return records;
+    }
+
+    /**
      * 更新任务轮次的改写问题
      *
      * @param taskTurnId      任务轮次ID

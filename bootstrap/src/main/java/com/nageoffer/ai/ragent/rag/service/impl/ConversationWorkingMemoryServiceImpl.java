@@ -49,9 +49,9 @@ import java.util.List;
 @RequiredArgsConstructor
 public class ConversationWorkingMemoryServiceImpl implements ConversationWorkingMemoryService {
 
-    private static final int DEFAULT_CONTEXT_TURN_LIMIT = 6;
-    private static final int CANDIDATE_TASK_LIMIT = 5;
-    private static final int CANDIDATE_RECENT_QUESTION_LIMIT = 5;
+    private static final int DEFAULT_CONTEXT_TURN_LIMIT = 4;
+    private static final int CANDIDATE_TASK_LIMIT = 3;
+    private static final int CANDIDATE_RECENT_QUESTION_LIMIT = 4;
     private static final int TOPIC_KEY_MAX_LENGTH = 128;
     private static final int GOAL_MAX_LENGTH = 512;
     private static final int STATE_JSON_INPUT_MAX_LENGTH = 3000;
@@ -147,7 +147,7 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
                                                                    String userId,
                                                                    int limit) {
         int actualLimit = limit > 0 ? limit : DEFAULT_CONTEXT_TURN_LIMIT;
-        List<ConversationTaskTurnDO> taskTurns = conversationTaskTurnService.listRecentTurns(
+        List<ConversationTaskTurnDO> taskTurns = conversationTaskTurnService.listRecentCompletedTurns(
                 conversationTaskId, conversationId, userId, actualLimit);
         if (taskTurns.isEmpty()) {
             return List.of();
@@ -155,12 +155,11 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
 
         List<String> messageIds = new ArrayList<>(taskTurns.size() * 2);
         for (ConversationTaskTurnDO taskTurn : taskTurns) {
-            if (StrUtil.isNotBlank(taskTurn.getUserMessageId())) {
-                messageIds.add(taskTurn.getUserMessageId());
+            if (StrUtil.isBlank(taskTurn.getUserMessageId()) || StrUtil.isBlank(taskTurn.getAssistantMessageId())) {
+                continue;
             }
-            if (StrUtil.isNotBlank(taskTurn.getAssistantMessageId())) {
-                messageIds.add(taskTurn.getAssistantMessageId());
-            }
+            messageIds.add(taskTurn.getUserMessageId());
+            messageIds.add(taskTurn.getAssistantMessageId());
         }
         return conversationMessageService.listMessagesByIds(conversationId, userId, messageIds);
     }

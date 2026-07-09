@@ -47,6 +47,18 @@ public interface ConversationTaskTurnService {
                                                  String userId, int limit);
 
     /**
+     * 查询指定任务最近已完成的轮次，并按创建时间升序返回。
+     *
+     * @param conversationTaskId 会话工作记忆任务ID
+     * @param conversationId     会话ID
+     * @param userId             用户ID
+     * @param limit              最大返回数量
+     * @return 最近已完成任务轮次列表
+     */
+    List<ConversationTaskTurnDO> listRecentCompletedTurns(String conversationTaskId, String conversationId,
+                                                          String userId, int limit);
+
+    /**
      * 更新任务轮次的改写问题
      *
      * @param taskTurnId      任务轮次ID

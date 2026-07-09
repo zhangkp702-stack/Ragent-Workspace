@@ -91,8 +91,8 @@ public class StreamChatPipeline {
      * 执行流式对话管道
      */
     public void execute(StreamChatContext ctx) {
-        // 加载上下文对话历史
-        loadMemory(ctx);
+        // 先保存当前用户消息，为后续 task turn 关联提供 messageId
+        persistUserMessage(ctx);
         loadWorkingMemory(ctx);
         // 重写用户问题 调用大模型  chat
         rewriteQuery(ctx);
@@ -118,11 +118,10 @@ public class StreamChatPipeline {
     }
 
     // ==================== 流水线阶段 ====================
-    // 加载上下文对话历史
-    private void loadMemory(StreamChatContext ctx) {
-        List<ChatMessage> history = memoryService.load(ctx.getConversationId(), ctx.getUserId());
+    // 保存当前用户消息，不再在主链路中按 conversation 维度加载 history
+    private void persistUserMessage(StreamChatContext ctx) {
         String userMessageId = memoryService.append(ctx.getConversationId(), ctx.getUserId(), ChatMessage.user(ctx.getQuestion()));
-        ctx.setHistory(history);
+        ctx.setHistory(List.of());
         ctx.setUserMessageId(userMessageId);
     }
     // 加载工作记忆上下文
@@ -153,12 +152,10 @@ public class StreamChatPipeline {
                 conversationTaskId,
                 ctx.getConversationId(),
                 ctx.getUserId(),
-                6
+                4
         );
         List<ChatMessage> taskHistory = toChatMessages(taskMessages, ctx.getUserMessageId());
-        if (CollUtil.isNotEmpty(taskHistory)) {
-            ctx.setHistory(taskHistory);
-        }
+        ctx.setHistory(CollUtil.isNotEmpty(taskHistory) ? taskHistory : List.of());
     }
     // 把用户问题和上下文对话历史，调用大模型重写，返回重写后的主问题和子问题
     private void rewriteQuery(StreamChatContext ctx) {
