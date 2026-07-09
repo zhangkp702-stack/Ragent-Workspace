@@ -172,7 +172,7 @@ public class StreamChatEventHandler implements StreamCallback {
                 String thinkingContent = thinking.isEmpty() ? null : thinking.toString();
                 ChatMessage message = ChatMessage.assistant(content, thinkingContent, resolveThinkingDuration());
                 messageId = memoryService.append(conversationId, userId, message);
-                markTaskTurnSuccess(messageId);
+                markTaskTurnCancelled(messageId);
                 updateTaskLastMessage(messageId);
             } catch (Exception e) {
                 log.error("取消时持久化消息失败，conversationId：{}", conversationId, e);
@@ -284,6 +284,18 @@ public class StreamChatEventHandler implements StreamCallback {
      *
      * @param assistantAnswer 助手回答
      */
+    /**
+     * 灏嗕會璇濆伐浣滆蹇嗕换鍔¤疆娆℃爣璁颁负宸插彇娑堬紝骞惰褰曞凡钀藉簱鐨勫姪鎵嬫秷鎭疘D銆?
+     *
+     * @param assistantMessageId 鍔╂墜娑堟伅ID
+     */
+    private void markTaskTurnCancelled(String assistantMessageId) {
+        if (conversationTaskTurnService == null || StrUtil.isBlank(taskTurnId)) {
+            return;
+        }
+        conversationTaskTurnService.markCancelled(taskTurnId, assistantMessageId);
+    }
+
     private void updateConversationTaskState(String assistantAnswer) {
         if (!taskStateUpdateEnabled
                 || conversationWorkingMemoryService == null

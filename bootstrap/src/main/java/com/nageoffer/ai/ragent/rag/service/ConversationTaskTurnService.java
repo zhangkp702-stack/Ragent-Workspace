@@ -93,4 +93,13 @@ public interface ConversationTaskTurnService {
      * @return 是否更新成功
      */
     boolean markFailed(String taskTurnId, String errorMessage);
+
+    /**
+     * 灏嗕换鍔¤疆娆℃爣璁颁负宸插彇娑堬紝骞惰褰曞凡钀藉簱鐨勫姪鎵嬫秷鎭疘D
+     *
+     * @param taskTurnId         浠诲姟杞ID
+     * @param assistantMessageId 鍔╂墜娑堟伅ID
+     * @return 鏄惁鏇存柊鎴愬姛
+     */
+    boolean markCancelled(String taskTurnId, String assistantMessageId);
 }

@@ -39,6 +39,7 @@ public class ConversationTaskTurnServiceImpl implements ConversationTaskTurnServ
     private static final String STATUS_RUNNING = "RUNNING";
     private static final String STATUS_SUCCESS = "SUCCESS";
     private static final String STATUS_FAILED = "FAILED";
+    private static final String STATUS_CANCELLED = "CANCELLED";
 
     private final ConversationTaskTurnMapper conversationTaskTurnMapper;
 
@@ -208,6 +209,32 @@ public class ConversationTaskTurnServiceImpl implements ConversationTaskTurnServ
                         .eq(ConversationTaskTurnDO::getDeleted, 0)
                         .set(ConversationTaskTurnDO::getStatus, STATUS_FAILED)
                         .set(ConversationTaskTurnDO::getErrorMessage, errorMessage)
+                        .set(ConversationTaskTurnDO::getUpdateTime, new Date())
+        );
+        return updated > 0;
+    }
+
+    /**
+     * 灏嗕换鍔¤疆娆℃爣璁颁负宸插彇娑堬紝骞朵繚鐣欏凡缁忚惤搴撶殑鍔╂墜娑堟伅ID
+     *
+     * @param taskTurnId         浠诲姟杞ID
+     * @param assistantMessageId 鍔╂墜娑堟伅ID
+     * @return 鏄惁鏇存柊鎴愬姛
+     */
+    @Override
+    public boolean markCancelled(String taskTurnId, String assistantMessageId) {
+        if (StrUtil.isBlank(taskTurnId)) {
+            return false;
+        }
+        int updated = conversationTaskTurnMapper.update(
+                null,
+                Wrappers.lambdaUpdate(ConversationTaskTurnDO.class)
+                        .eq(ConversationTaskTurnDO::getId, taskTurnId)
+                        .eq(ConversationTaskTurnDO::getDeleted, 0)
+                        .set(ConversationTaskTurnDO::getStatus, STATUS_CANCELLED)
+                        .set(StrUtil.isNotBlank(assistantMessageId),
+                                ConversationTaskTurnDO::getAssistantMessageId, assistantMessageId)
+                        .set(ConversationTaskTurnDO::getErrorMessage, null)
                         .set(ConversationTaskTurnDO::getUpdateTime, new Date())
         );
         return updated > 0;
