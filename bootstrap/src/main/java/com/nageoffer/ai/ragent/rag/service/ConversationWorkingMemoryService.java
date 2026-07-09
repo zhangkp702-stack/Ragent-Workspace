@@ -39,6 +39,15 @@ public interface ConversationWorkingMemoryService {
     ConversationTaskDO resolveConversationTask(String conversationId, String userId, String questionText);
 
     /**
+     * 根据解析前的活跃任务和当前命中的任务，判断当前轮次的任务继承类型。
+     *
+     * @param activeTask              解析前的活跃任务
+     * @param resolvedConversationTask 当前命中的任务
+     * @return 任务继承类型
+     */
+    String resolveInheritanceType(ConversationTaskDO activeTask, ConversationTaskDO resolvedConversationTask);
+
+    /**
      * 保存当前用户问题对应的工作记忆任务轮次。
      *
      * @param conversationTaskId 会话工作记忆任务ID
@@ -50,7 +59,8 @@ public interface ConversationWorkingMemoryService {
      * @return 任务轮次ID，不满足保存条件时返回 null
      */
     String saveConversationTaskTurn(String conversationTaskId, String conversationId, String userId,
-                                    String userMessageId, String questionText, String rewriteQuestion);
+                                    String userMessageId, String inheritanceType,
+                                    String questionText, String rewriteQuestion);
 
     /**
      * 加载指定工作记忆任务最近几轮关联的真实会话消息。

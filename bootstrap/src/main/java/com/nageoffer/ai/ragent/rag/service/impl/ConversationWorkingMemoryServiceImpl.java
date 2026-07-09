@@ -51,6 +51,9 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
 
     private static final int DEFAULT_CONTEXT_TURN_LIMIT = 3;
     private static final int CANDIDATE_TASK_LIMIT = 3;
+    private static final String INHERITANCE_TYPE_NEW = "NEW";
+    private static final String INHERITANCE_TYPE_REUSE_ACTIVE = "REUSE_ACTIVE";
+    private static final String INHERITANCE_TYPE_SWITCH_HISTORY = "SWITCH_HISTORY";
     private static final int TOPIC_KEY_MAX_LENGTH = 128;
     private static final int GOAL_MAX_LENGTH = 512;
     private static final int STATE_JSON_INPUT_MAX_LENGTH = 3000;
@@ -100,6 +103,29 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
     }
 
     /**
+     * 根据解析前的活跃任务与当前命中的任务，判断当前轮次的任务继承类型。
+     *
+     * @param activeTask             解析前的活跃任务
+     * @param resolvedConversationTask 当前命中的任务
+     * @return 任务继承类型
+     */
+    @Override
+    public String resolveInheritanceType(ConversationTaskDO activeTask, ConversationTaskDO resolvedConversationTask) {
+        if (resolvedConversationTask == null) {
+            return null;
+        }
+        Integer turnCount = resolvedConversationTask.getTurnCount();
+        if (turnCount == null || turnCount <= 0) {
+            return INHERITANCE_TYPE_NEW;
+        }
+        if (activeTask != null
+                && StrUtil.equals(activeTask.getConversationTaskId(), resolvedConversationTask.getConversationTaskId())) {
+            return INHERITANCE_TYPE_REUSE_ACTIVE;
+        }
+        return INHERITANCE_TYPE_SWITCH_HISTORY;
+    }
+
+    /**
      * 创建任务轮次，并同步更新任务最新轮次和最新用户消息。
      *
      * @param conversationTaskId 会话工作记忆任务ID
@@ -112,7 +138,8 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
      */
     @Override
     public String saveConversationTaskTurn(String conversationTaskId, String conversationId, String userId,
-                                           String userMessageId, String questionText, String rewriteQuestion) {
+                                           String userMessageId, String inheritanceType,
+                                           String questionText, String rewriteQuestion) {
         if (StrUtil.hasBlank(conversationTaskId, conversationId, userId, userMessageId, questionText)) {
             return null;
         }
@@ -121,6 +148,7 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
                 .conversationId(conversationId)
                 .userId(userId)
                 .userMessageId(userMessageId)
+                .inheritanceType(inheritanceType)
                 .questionText(questionText)
                 .rewriteQuestion(rewriteQuestion)
                 .build();

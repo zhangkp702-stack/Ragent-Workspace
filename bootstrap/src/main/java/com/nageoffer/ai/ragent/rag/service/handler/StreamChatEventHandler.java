@@ -57,6 +57,7 @@ public class StreamChatEventHandler implements StreamCallback {
     private String taskTurnId;
     private String questionText;
     private String rewriteQuestion;
+    private boolean taskStateUpdateEnabled;
 
     // 用于控制模型生成的 token 数量，避免一次生成过长的 token 导致性能问题
     private final int messageChunkSize;
@@ -118,6 +119,13 @@ public class StreamChatEventHandler implements StreamCallback {
     }
 
     /**
+     * 允许当前流式回调在完成后回写任务摘要。
+     */
+    public void enableTaskStateUpdate() {
+        this.taskStateUpdateEnabled = true;
+    }
+
+    /**
      * 初始化：发送元数据事件并注册任务
      */
     private void initialize() {
@@ -166,7 +174,6 @@ public class StreamChatEventHandler implements StreamCallback {
                 messageId = memoryService.append(conversationId, userId, message);
                 markTaskTurnSuccess(messageId);
                 updateTaskLastMessage(messageId);
-                updateConversationTaskState(content);
             } catch (Exception e) {
                 log.error("取消时持久化消息失败，conversationId：{}", conversationId, e);
                 markTaskTurnFailed(e.getMessage());
@@ -278,7 +285,8 @@ public class StreamChatEventHandler implements StreamCallback {
      * @param assistantAnswer 助手回答
      */
     private void updateConversationTaskState(String assistantAnswer) {
-        if (conversationWorkingMemoryService == null
+        if (!taskStateUpdateEnabled
+                || conversationWorkingMemoryService == null
                 || StrUtil.hasBlank(conversationTaskId, taskTurnId, questionText, assistantAnswer)) {
             return;
         }

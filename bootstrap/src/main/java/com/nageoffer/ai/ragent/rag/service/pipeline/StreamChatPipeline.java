@@ -42,6 +42,7 @@ import com.nageoffer.ai.ragent.rag.dao.entity.ConversationTaskDO;
 import com.nageoffer.ai.ragent.rag.dto.IntentGroup;
 import com.nageoffer.ai.ragent.rag.dto.RetrievalContext;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
+import com.nageoffer.ai.ragent.rag.service.ConversationTaskService;
 import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
 import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
 import com.nageoffer.ai.ragent.rag.service.handler.StreamChatEventHandler;
@@ -84,6 +85,7 @@ public class StreamChatPipeline {
     private final RAGPromptService promptBuilder;
     private final PromptTemplateLoader promptTemplateLoader;
     private final StreamTaskManager taskManager;
+    private final ConversationTaskService conversationTaskService;
     private final ConversationWorkingMemoryService workingMemoryService;
     private final ConversationTaskTurnService conversationTaskTurnService;
 
@@ -114,6 +116,7 @@ public class StreamChatPipeline {
             return;
         }
 
+        enableTaskStateUpdate(ctx);
         streamRagResponse(ctx, retrievalCtx);
     }
 
@@ -126,6 +129,10 @@ public class StreamChatPipeline {
     }
     // 加载工作记忆上下文
     private void loadWorkingMemory(StreamChatContext ctx) {
+        ConversationTaskDO activeTask = conversationTaskService.getActiveTask(
+                ctx.getConversationId(),
+                ctx.getUserId()
+        );
         ConversationTaskDO conversationTask = workingMemoryService.resolveConversationTask(
                 ctx.getConversationId(),
                 ctx.getUserId(),
@@ -137,12 +144,14 @@ public class StreamChatPipeline {
 
         String conversationTaskId = conversationTask.getConversationTaskId();
         ctx.setConversationTaskId(conversationTaskId);
+        String inheritanceType = workingMemoryService.resolveInheritanceType(activeTask, conversationTask);
 
         String taskTurnId = workingMemoryService.saveConversationTaskTurn(
                 conversationTaskId,
                 ctx.getConversationId(),
                 ctx.getUserId(),
                 ctx.getUserMessageId(),
+                inheritanceType,
                 ctx.getQuestion(),
                 null
         );
@@ -342,6 +351,17 @@ public class StreamChatPipeline {
                     ctx.getQuestion(),
                     rewriteQuestion
             );
+        }
+    }
+
+    /**
+     * 标记当前回调允许回写任务摘要，仅正常 RAG 业务回答进入任务压缩。
+     *
+     * @param ctx 流式对话上下文
+     */
+    private void enableTaskStateUpdate(StreamChatContext ctx) {
+        if (ctx.getCallback() instanceof StreamChatEventHandler eventHandler) {
+            eventHandler.enableTaskStateUpdate();
         }
     }
 
