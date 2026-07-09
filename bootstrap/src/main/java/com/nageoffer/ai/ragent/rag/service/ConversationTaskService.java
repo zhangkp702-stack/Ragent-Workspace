@@ -93,6 +93,17 @@ public interface ConversationTaskService {
     boolean recordSnapshot(String conversationTaskId, String snapshotId);
 
     /**
+     * 更新工作记忆任务的压缩状态。
+     *
+     * @param conversationTaskId 会话工作记忆任务ID
+     * @param conversationId     会话ID
+     * @param userId             用户ID
+     * @param stateJson          任务压缩状态JSON
+     * @return 是否更新成功
+     */
+    boolean updateStateJson(String conversationTaskId, String conversationId, String userId, String stateJson);
+
+    /**
      * 更新任务最后关联的消息
      *
      * @param conversationTaskId 会话工作记忆任务ID

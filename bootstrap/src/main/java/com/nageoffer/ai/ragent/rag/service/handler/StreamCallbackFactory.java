@@ -22,6 +22,7 @@ import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.rag.core.memory.ConversationMemoryService;
 import com.nageoffer.ai.ragent.rag.service.ConversationGroupService;
 import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
+import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -39,6 +40,7 @@ public class StreamCallbackFactory {
     private final ConversationGroupService conversationGroupService;
     private final StreamTaskManager taskManager;
     private final ConversationTaskTurnService conversationTaskTurnService;
+    private final ConversationWorkingMemoryService conversationWorkingMemoryService;
 
     /**
      * 创建聊天事件处理器
@@ -60,6 +62,7 @@ public class StreamCallbackFactory {
                 .conversationGroupService(conversationGroupService)
                 .taskManager(taskManager)
                 .conversationTaskTurnService(conversationTaskTurnService)
+                .conversationWorkingMemoryService(conversationWorkingMemoryService)
                 .build();
         // 创建一个用于处理大模型流式回调的对象
         return new StreamChatEventHandler(params);

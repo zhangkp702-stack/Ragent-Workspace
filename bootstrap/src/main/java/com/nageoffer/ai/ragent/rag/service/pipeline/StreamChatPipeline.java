@@ -94,9 +94,9 @@ public class StreamChatPipeline {
         // 加载上下文对话历史
         loadMemory(ctx);
         loadWorkingMemory(ctx);
-        bindTaskTurnCallback(ctx);
         // 重写用户问题 调用大模型  chat
         rewriteQuery(ctx);
+        bindWorkingMemoryCallback(ctx);
         // 意图识别调用大模型  chat
         resolveIntents(ctx);
         // 判断是否有歧义意图
@@ -285,12 +285,18 @@ public class StreamChatPipeline {
      *
      * @param ctx 流式对话上下文
      */
-    private void bindTaskTurnCallback(StreamChatContext ctx) {
-        if (StrUtil.isBlank(ctx.getTaskTurnId())) {
+    private void bindWorkingMemoryCallback(StreamChatContext ctx) {
+        if (StrUtil.hasBlank(ctx.getConversationTaskId(), ctx.getTaskTurnId())) {
             return;
         }
         if (ctx.getCallback() instanceof StreamChatEventHandler eventHandler) {
-            eventHandler.bindTaskTurn(ctx.getTaskTurnId());
+            String rewriteQuestion = ctx.getRewriteResult() == null ? null : ctx.getRewriteResult().rewrittenQuestion();
+            eventHandler.bindWorkingMemory(
+                    ctx.getConversationTaskId(),
+                    ctx.getTaskTurnId(),
+                    ctx.getQuestion(),
+                    rewriteQuestion
+            );
         }
     }
 

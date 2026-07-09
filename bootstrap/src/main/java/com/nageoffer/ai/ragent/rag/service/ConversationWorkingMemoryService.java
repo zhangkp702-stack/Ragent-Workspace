@@ -71,4 +71,18 @@ public interface ConversationWorkingMemoryService {
      * @return 检索快照ID，不满足保存条件时返回 null
      */
     String saveConversationRetrievalSnapshot(ConversationRetrievalSnapshotDO snapshot);
+
+    /**
+     * 根据本轮问答更新会话工作记忆任务的压缩状态。
+     *
+     * @param conversationTaskId 会话工作记忆任务ID
+     * @param conversationId     会话ID
+     * @param userId             用户ID
+     * @param questionText       用户原始问题
+     * @param rewriteQuestion    改写后的问题
+     * @param assistantAnswer    助手回答
+     * @return 是否更新成功
+     */
+    boolean updateConversationTaskState(String conversationTaskId, String conversationId, String userId,
+                                        String questionText, String rewriteQuestion, String assistantAnswer);
 }

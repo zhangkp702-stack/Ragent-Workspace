@@ -54,6 +54,8 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
     private static final int CANDIDATE_RECENT_QUESTION_LIMIT = 5;
     private static final int TOPIC_KEY_MAX_LENGTH = 128;
     private static final int GOAL_MAX_LENGTH = 512;
+    private static final int STATE_JSON_INPUT_MAX_LENGTH = 3000;
+    private static final int ASSISTANT_ANSWER_INPUT_MAX_LENGTH = 3000;
     private static final double LLM_MATCH_CONFIDENCE_THRESHOLD = 0.7D;
 
     private final ConversationTaskService conversationTaskService;
@@ -179,6 +181,129 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
             conversationTaskService.recordSnapshot(snapshot.getConversationTaskId(), snapshotId);
         }
         return snapshotId;
+    }
+
+    /**
+     * 根据本轮问答压缩更新任务状态JSON，用于后续任务归属和上下文恢复。
+     *
+     * @param conversationTaskId 会话工作记忆任务ID
+     * @param conversationId     会话ID
+     * @param userId             用户ID
+     * @param questionText       用户原始问题
+     * @param rewriteQuestion    改写后的问题
+     * @param assistantAnswer    助手回答
+     * @return 是否更新成功
+     */
+    @Override
+    public boolean updateConversationTaskState(String conversationTaskId, String conversationId, String userId,
+                                               String questionText, String rewriteQuestion, String assistantAnswer) {
+        if (StrUtil.hasBlank(conversationTaskId, conversationId, userId, questionText, assistantAnswer)) {
+            return false;
+        }
+        ConversationTaskDO task = conversationTaskService.getTask(conversationTaskId, conversationId, userId);
+        if (task == null) {
+            return false;
+        }
+        try {
+            String raw = llmService.chat(buildTaskStateRequest(task, questionText, rewriteQuestion, assistantAnswer));
+            String stateJson = parseTaskStateJson(raw);
+            if (StrUtil.isBlank(stateJson)) {
+                return false;
+            }
+            return conversationTaskService.updateStateJson(conversationTaskId, conversationId, userId, stateJson);
+        } catch (Exception e) {
+            log.warn("更新会话工作记忆任务摘要失败 - conversationTaskId={}, conversationId={}, userId={}",
+                    conversationTaskId, conversationId, userId, e);
+            return false;
+        }
+    }
+
+    /**
+     * 构建任务状态压缩的大模型请求。
+     *
+     * @param task            当前工作记忆任务
+     * @param questionText    用户原始问题
+     * @param rewriteQuestion 改写后的问题
+     * @param assistantAnswer 助手回答
+     * @return 大模型请求
+     */
+    private ChatRequest buildTaskStateRequest(ConversationTaskDO task, String questionText,
+                                              String rewriteQuestion, String assistantAnswer) {
+        String systemPrompt = """
+                你是会话工作记忆压缩器。
+                你的任务是把一个主题任务下的历史压缩状态和本轮问答合并成新的任务状态。
+                要求：
+                1. 只保留对后续判断任务归属、恢复上下文有帮助的信息。
+                2. 不要复制长篇回答原文，要压缩成事实、进展、约束和待确认点。
+                3. 最近用户问题最多保留 5 条，按时间从旧到新排列。
+                4. 只返回 JSON 对象，不要输出解释性文本。
+                JSON 结构固定如下：
+                {
+                  "summary": "任务整体摘要，不超过120字",
+                  "currentGoal": "当前任务目标",
+                  "progress": ["已经明确或完成的进展"],
+                  "constraints": ["用户表达过的限制、偏好、边界"],
+                  "openQuestions": ["后续仍需确认的问题"],
+                  "recentUserQuestions": ["最近用户问题"],
+                  "lastRewriteQuestion": "本轮改写后的问题",
+                  "lastUpdatedReason": "本轮更新原因，不超过60字"
+                }
+                """;
+        String userPrompt = """
+                当前任务基础信息：
+                conversationTaskId=%s
+                topicKey=%s
+                goal=%s
+
+                历史压缩状态：
+                %s
+
+                本轮用户原始问题：
+                %s
+
+                本轮改写问题：
+                %s
+
+                本轮助手回答：
+                %s
+                """.formatted(
+                task.getConversationTaskId(),
+                StrUtil.blankToDefault(task.getTopicKey(), ""),
+                StrUtil.blankToDefault(task.getGoal(), ""),
+                StrUtil.blankToDefault(truncate(task.getStateJson(), STATE_JSON_INPUT_MAX_LENGTH), "{}"),
+                questionText,
+                StrUtil.blankToDefault(rewriteQuestion, ""),
+                truncate(assistantAnswer, ASSISTANT_ANSWER_INPUT_MAX_LENGTH)
+        );
+        return ChatRequest.builder()
+                .messages(List.of(
+                        ChatMessage.system(systemPrompt),
+                        ChatMessage.user(userPrompt)
+                ))
+                .temperature(0.1D)
+                .topP(0.3D)
+                .thinking(false)
+                .build();
+    }
+
+    /**
+     * 解析大模型返回的任务压缩状态JSON。
+     *
+     * @param raw 大模型原始响应
+     * @return 可写入 state_json 的 JSON 字符串，解析失败时返回 null
+     */
+    private String parseTaskStateJson(String raw) {
+        try {
+            String cleanedRaw = LLMResponseCleaner.stripMarkdownCodeFence(raw);
+            JsonElement root = JsonParser.parseString(cleanedRaw);
+            if (!root.isJsonObject()) {
+                return null;
+            }
+            return root.getAsJsonObject().toString();
+        } catch (Exception e) {
+            log.warn("解析会话工作记忆任务摘要 LLM 响应失败，raw={}", raw, e);
+            return null;
+        }
     }
 
     /**

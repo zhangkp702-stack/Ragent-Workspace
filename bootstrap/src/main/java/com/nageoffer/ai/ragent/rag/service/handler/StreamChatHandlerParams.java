@@ -21,6 +21,7 @@ import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.rag.core.memory.ConversationMemoryService;
 import com.nageoffer.ai.ragent.rag.service.ConversationGroupService;
 import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
+import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
 import lombok.Builder;
 import lombok.Getter;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -72,4 +73,9 @@ public class StreamChatHandlerParams {
      * 会话工作记忆任务轮次服务
      */
     private final ConversationTaskTurnService conversationTaskTurnService;
+
+    /**
+     * 会话工作记忆编排服务
+     */
+    private final ConversationWorkingMemoryService conversationWorkingMemoryService;
 }

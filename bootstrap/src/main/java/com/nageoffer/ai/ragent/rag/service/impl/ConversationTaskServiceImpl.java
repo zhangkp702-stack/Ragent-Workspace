@@ -236,6 +236,35 @@ public class ConversationTaskServiceImpl implements ConversationTaskService {
     }
 
     /**
+     * 更新工作记忆任务的压缩状态JSON。
+     *
+     * @param conversationTaskId 会话工作记忆任务ID
+     * @param conversationId     会话ID
+     * @param userId             用户ID
+     * @param stateJson          任务压缩状态JSON
+     * @return 是否更新成功
+     */
+    @Override
+    public boolean updateStateJson(String conversationTaskId, String conversationId, String userId, String stateJson) {
+        if (StrUtil.hasBlank(conversationTaskId, conversationId, userId, stateJson)) {
+            return false;
+        }
+        Date now = new Date();
+        int updated = conversationTaskMapper.update(
+                null,
+                Wrappers.lambdaUpdate(ConversationTaskDO.class)
+                        .eq(ConversationTaskDO::getConversationTaskId, conversationTaskId)
+                        .eq(ConversationTaskDO::getConversationId, conversationId)
+                        .eq(ConversationTaskDO::getUserId, userId)
+                        .eq(ConversationTaskDO::getDeleted, 0)
+                        .set(ConversationTaskDO::getStateJson, stateJson)
+                        .set(ConversationTaskDO::getLastActiveTime, now)
+                        .set(ConversationTaskDO::getUpdateTime, now)
+        );
+        return updated > 0;
+    }
+
+    /**
      * 更新任务最后关联的消息
      *
      * @param conversationTaskId 会话工作记忆任务ID

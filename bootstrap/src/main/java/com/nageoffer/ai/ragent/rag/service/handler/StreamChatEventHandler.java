@@ -32,6 +32,7 @@ import com.nageoffer.ai.ragent.rag.core.memory.ConversationMemoryService;
 import lombok.extern.slf4j.Slf4j;
 import com.nageoffer.ai.ragent.rag.service.ConversationGroupService;
 import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
+import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
 
 import java.util.Optional;
 
@@ -49,7 +50,11 @@ public class StreamChatEventHandler implements StreamCallback {
     private final String userId;
     private final StreamTaskManager taskManager;
     private final ConversationTaskTurnService conversationTaskTurnService;
+    private final ConversationWorkingMemoryService conversationWorkingMemoryService;
+    private String conversationTaskId;
     private String taskTurnId;
+    private String questionText;
+    private String rewriteQuestion;
 
     // 用于控制模型生成的 token 数量，避免一次生成过长的 token 导致性能问题
     private final int messageChunkSize;
@@ -79,6 +84,7 @@ public class StreamChatEventHandler implements StreamCallback {
         this.userId = UserContext.getUserId();
         this.taskManager = params.getTaskManager();
         this.conversationTaskTurnService = params.getConversationTaskTurnService();
+        this.conversationWorkingMemoryService = params.getConversationWorkingMemoryService();
 
         // 计算配置
         this.messageChunkSize = resolveMessageChunkSize(params.getModelProperties());
@@ -92,9 +98,20 @@ public class StreamChatEventHandler implements StreamCallback {
      * 绑定会话工作记忆任务轮次，用于流式回答完成或失败后回写处理状态。
      *
      * @param taskTurnId 会话工作记忆任务轮次ID
+     *
+     * 绑定会话工作记忆上下文，用于流式回答完成后更新任务压缩状态。
+     *
+     * @param conversationTaskId 会话工作记忆任务ID
+     * @param taskTurnId         会话工作记忆任务轮次ID
+     * @param questionText       用户原始问题
+     * @param rewriteQuestion    改写后的问题
      */
-    public void bindTaskTurn(String taskTurnId) {
+    public void bindWorkingMemory(String conversationTaskId, String taskTurnId,
+                                  String questionText, String rewriteQuestion) {
+        this.conversationTaskId = conversationTaskId;
         this.taskTurnId = taskTurnId;
+        this.questionText = questionText;
+        this.rewriteQuestion = rewriteQuestion;
     }
 
     /**
@@ -145,6 +162,7 @@ public class StreamChatEventHandler implements StreamCallback {
                 ChatMessage message = ChatMessage.assistant(content, thinkingContent, resolveThinkingDuration());
                 messageId = memoryService.append(conversationId, userId, message);
                 markTaskTurnSuccess(messageId);
+                updateConversationTaskState(content);
             } catch (Exception e) {
                 log.error("取消时持久化消息失败，conversationId：{}", conversationId, e);
                 markTaskTurnFailed(e.getMessage());
@@ -202,6 +220,7 @@ public class StreamChatEventHandler implements StreamCallback {
             // 追加消息
             messageId = memoryService.append(conversationId, userId, message);
             markTaskTurnSuccess(messageId);
+            updateConversationTaskState(answer.toString());
         } catch (Exception e) {
             log.error("对话完成时持久化消息失败，conversationId：{}", conversationId, e);
             markTaskTurnFailed(e.getMessage());
@@ -246,6 +265,26 @@ public class StreamChatEventHandler implements StreamCallback {
             return;
         }
         conversationTaskTurnService.markFailed(taskTurnId, errorMessage);
+    }
+
+    /**
+     * 使用本轮问答更新会话工作记忆任务压缩状态。
+     *
+     * @param assistantAnswer 助手回答
+     */
+    private void updateConversationTaskState(String assistantAnswer) {
+        if (conversationWorkingMemoryService == null
+                || StrUtil.hasBlank(conversationTaskId, taskTurnId, questionText, assistantAnswer)) {
+            return;
+        }
+        conversationWorkingMemoryService.updateConversationTaskState(
+                conversationTaskId,
+                conversationId,
+                userId,
+                questionText,
+                rewriteQuestion,
+                assistantAnswer
+        );
     }
 
     private void sendChunked(String type, String content) {
