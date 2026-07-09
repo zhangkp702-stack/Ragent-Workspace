@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.rag.service.handler;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.rag.core.memory.ConversationMemoryService;
 import com.nageoffer.ai.ragent.rag.service.ConversationGroupService;
+import com.nageoffer.ai.ragent.rag.service.ConversationTaskService;
 import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
 import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
 import lombok.Builder;
@@ -73,6 +74,8 @@ public class StreamChatHandlerParams {
      * 会话工作记忆任务轮次服务
      */
     private final ConversationTaskTurnService conversationTaskTurnService;
+
+    private final ConversationTaskService conversationTaskService;
 
     /**
      * 会话工作记忆编排服务

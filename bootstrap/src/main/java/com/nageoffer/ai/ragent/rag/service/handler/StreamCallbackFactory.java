@@ -21,6 +21,7 @@ import com.nageoffer.ai.ragent.infra.chat.StreamCallback;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.rag.core.memory.ConversationMemoryService;
 import com.nageoffer.ai.ragent.rag.service.ConversationGroupService;
+import com.nageoffer.ai.ragent.rag.service.ConversationTaskService;
 import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
 import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
 import lombok.RequiredArgsConstructor;
@@ -40,6 +41,7 @@ public class StreamCallbackFactory {
     private final ConversationGroupService conversationGroupService;
     private final StreamTaskManager taskManager;
     private final ConversationTaskTurnService conversationTaskTurnService;
+    private final ConversationTaskService conversationTaskService;
     private final ConversationWorkingMemoryService conversationWorkingMemoryService;
 
     /**
@@ -62,6 +64,7 @@ public class StreamCallbackFactory {
                 .conversationGroupService(conversationGroupService)
                 .taskManager(taskManager)
                 .conversationTaskTurnService(conversationTaskTurnService)
+                .conversationTaskService(conversationTaskService)
                 .conversationWorkingMemoryService(conversationWorkingMemoryService)
                 .build();
         // 创建一个用于处理大模型流式回调的对象

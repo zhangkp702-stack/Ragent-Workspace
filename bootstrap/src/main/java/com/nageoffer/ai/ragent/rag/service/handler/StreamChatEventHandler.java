@@ -31,6 +31,7 @@ import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.rag.core.memory.ConversationMemoryService;
 import lombok.extern.slf4j.Slf4j;
 import com.nageoffer.ai.ragent.rag.service.ConversationGroupService;
+import com.nageoffer.ai.ragent.rag.service.ConversationTaskService;
 import com.nageoffer.ai.ragent.rag.service.ConversationTaskTurnService;
 import com.nageoffer.ai.ragent.rag.service.ConversationWorkingMemoryService;
 
@@ -50,6 +51,7 @@ public class StreamChatEventHandler implements StreamCallback {
     private final String userId;
     private final StreamTaskManager taskManager;
     private final ConversationTaskTurnService conversationTaskTurnService;
+    private final ConversationTaskService conversationTaskService;
     private final ConversationWorkingMemoryService conversationWorkingMemoryService;
     private String conversationTaskId;
     private String taskTurnId;
@@ -84,6 +86,7 @@ public class StreamChatEventHandler implements StreamCallback {
         this.userId = UserContext.getUserId();
         this.taskManager = params.getTaskManager();
         this.conversationTaskTurnService = params.getConversationTaskTurnService();
+        this.conversationTaskService = params.getConversationTaskService();
         this.conversationWorkingMemoryService = params.getConversationWorkingMemoryService();
 
         // 计算配置
@@ -162,6 +165,7 @@ public class StreamChatEventHandler implements StreamCallback {
                 ChatMessage message = ChatMessage.assistant(content, thinkingContent, resolveThinkingDuration());
                 messageId = memoryService.append(conversationId, userId, message);
                 markTaskTurnSuccess(messageId);
+                updateTaskLastMessage(messageId);
                 updateConversationTaskState(content);
             } catch (Exception e) {
                 log.error("取消时持久化消息失败，conversationId：{}", conversationId, e);
@@ -220,6 +224,7 @@ public class StreamChatEventHandler implements StreamCallback {
             // 追加消息
             messageId = memoryService.append(conversationId, userId, message);
             markTaskTurnSuccess(messageId);
+            updateTaskLastMessage(messageId);
             updateConversationTaskState(answer.toString());
         } catch (Exception e) {
             log.error("对话完成时持久化消息失败，conversationId：{}", conversationId, e);
@@ -285,6 +290,19 @@ public class StreamChatEventHandler implements StreamCallback {
                 rewriteQuestion,
                 assistantAnswer
         );
+    }
+
+    /**
+     * 回写任务最后处理到的消息ID，使 task.last_message_id 指向最近完成的助手消息。
+     *
+     * @param assistantMessageId 助手消息ID
+     */
+    private void updateTaskLastMessage(String assistantMessageId) {
+        if (conversationTaskService == null
+                || StrUtil.hasBlank(conversationTaskId, assistantMessageId)) {
+            return;
+        }
+        conversationTaskService.updateLastMessage(conversationTaskId, assistantMessageId);
     }
 
     private void sendChunked(String type, String content) {

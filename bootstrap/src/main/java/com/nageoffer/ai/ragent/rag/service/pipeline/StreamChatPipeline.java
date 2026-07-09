@@ -160,6 +160,10 @@ public class StreamChatPipeline {
             history.add(taskSummaryMessage);
         }
         List<ChatMessage> taskHistory = toChatMessages(taskMessages, ctx.getUserMessageId());
+        ChatMessage recentHistoryBoundaryMessage = buildRecentHistoryBoundaryMessage(taskHistory);
+        if (recentHistoryBoundaryMessage != null) {
+            history.add(recentHistoryBoundaryMessage);
+        }
         if (CollUtil.isNotEmpty(taskHistory)) {
             history.addAll(taskHistory);
         }
@@ -295,7 +299,30 @@ public class StreamChatPipeline {
         if (conversationTask == null || StrUtil.isBlank(conversationTask.getStateJson())) {
             return null;
         }
-        return ChatMessage.system("当前任务摘要：" + conversationTask.getStateJson());
+        String summaryMessage = """
+                以下内容是当前任务的长期工作记忆摘要，不是当前轮用户的新输入。
+                请优先基于这段任务级记忆理解当前问题的任务背景、目标、约束、已确认进展和待确认事项。
+                若后续最近几轮对话与该摘要不冲突，请继承该摘要中的任务背景；若存在明显更新，以最近几轮已完成问答为准。
+                任务摘要如下：
+                %s
+                """.formatted(conversationTask.getStateJson());
+        return ChatMessage.system(summaryMessage);
+    }
+
+    /**
+     * 构造短期上下文边界说明，提示后续问答仅用于补充最近细节。
+     *
+     * @param taskHistory 任务最近几轮问答
+     * @return 短期上下文说明消息，没有短期上下文时返回 null
+     */
+    private ChatMessage buildRecentHistoryBoundaryMessage(List<ChatMessage> taskHistory) {
+        if (CollUtil.isEmpty(taskHistory)) {
+            return null;
+        }
+        return ChatMessage.system("""
+                以下是该任务最近 3 轮已完成的用户问题与助手回复，用于补充任务摘要中未展开的最新细节。
+                这些内容属于短期上下文，若与任务摘要冲突，请优先参考时间更近且表达更明确的最新问答。
+                """);
     }
 
     /**
