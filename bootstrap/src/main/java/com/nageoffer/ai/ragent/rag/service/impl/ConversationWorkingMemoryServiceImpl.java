@@ -49,9 +49,8 @@ import java.util.List;
 @RequiredArgsConstructor
 public class ConversationWorkingMemoryServiceImpl implements ConversationWorkingMemoryService {
 
-    private static final int DEFAULT_CONTEXT_TURN_LIMIT = 4;
+    private static final int DEFAULT_CONTEXT_TURN_LIMIT = 3;
     private static final int CANDIDATE_TASK_LIMIT = 3;
-    private static final int CANDIDATE_RECENT_QUESTION_LIMIT = 4;
     private static final int TOPIC_KEY_MAX_LENGTH = 128;
     private static final int GOAL_MAX_LENGTH = 512;
     private static final int STATE_JSON_INPUT_MAX_LENGTH = 3000;
@@ -65,7 +64,7 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
     private final LLMService llmService;
 
     /**
-     * 优先复用当前活跃任务；没有活跃任务时创建并激活新任务。
+     * 优先基于任务摘要判断当前问题归属；无法匹配时创建并激活新任务。
      *
      * @param conversationId 会话ID
      * @param userId         用户ID
@@ -337,7 +336,7 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
     }
 
     /**
-     * 加载当前会话最近任务及每个任务最近用户问题。
+     * 加载当前会话最近任务摘要，供大模型判断当前问题归属。
      *
      * @param conversationId 会话ID
      * @param userId         用户ID
@@ -350,17 +349,9 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
             return List.of();
         }
 
-        List<TaskCandidate> candidates = new ArrayList<>(recentTasks.size());
-        for (ConversationTaskDO task : recentTasks) {
-            List<String> recentQuestions = conversationTaskTurnService.listRecentTurns(
-                            task.getConversationTaskId(), conversationId, userId, CANDIDATE_RECENT_QUESTION_LIMIT)
-                    .stream()
-                    .map(ConversationTaskTurnDO::getQuestionText)
-                    .filter(StrUtil::isNotBlank)
-                    .toList();
-            candidates.add(new TaskCandidate(task, recentQuestions));
-        }
-        return candidates;
+        return recentTasks.stream()
+                .map(TaskCandidate::new)
+                .toList();
     }
 
     /**
@@ -374,7 +365,7 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
         String systemPrompt = """
                 你是会话工作记忆任务归属判断器。
                 你的任务是判断“当前用户问题”是否属于候选任务中的某一个。
-                判断时优先参考候选任务的 topicKey、goal、stateJson 和最近用户问题。
+                判断时优先参考候选任务的 stateJson 摘要，其次再参考 topicKey 和 goal。
                 不要因为某个任务是 active 就默认选择它。
                 如果无法明确判断，或者置信度不足，请返回 CREATE_NEW。
 
@@ -416,14 +407,6 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
             appendPromptField(prompt, "topicKey", task.getTopicKey());
             appendPromptField(prompt, "goal", task.getGoal());
             appendPromptField(prompt, "stateJson", task.getStateJson());
-            prompt.append("   recentQuestions:\n");
-            if (candidate.recentQuestions().isEmpty()) {
-                prompt.append("   - 无\n");
-            } else {
-                for (String question : candidate.recentQuestions()) {
-                    prompt.append("   - ").append(question).append("\n");
-                }
-            }
             prompt.append("\n");
         }
         return prompt.toString();
@@ -514,10 +497,9 @@ public class ConversationWorkingMemoryServiceImpl implements ConversationWorking
     /**
      * 任务候选上下文。
      *
-     * @param task            候选任务
-     * @param recentQuestions 最近用户问题
+     * @param task 候选任务
      */
-    private record TaskCandidate(ConversationTaskDO task, List<String> recentQuestions) {
+    private record TaskCandidate(ConversationTaskDO task) {
     }
 
     /**

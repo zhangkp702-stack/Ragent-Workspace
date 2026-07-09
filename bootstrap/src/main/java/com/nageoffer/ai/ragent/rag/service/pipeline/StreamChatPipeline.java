@@ -152,10 +152,18 @@ public class StreamChatPipeline {
                 conversationTaskId,
                 ctx.getConversationId(),
                 ctx.getUserId(),
-                4
+                3
         );
+        List<ChatMessage> history = new ArrayList<>();
+        ChatMessage taskSummaryMessage = buildTaskSummaryMessage(conversationTask);
+        if (taskSummaryMessage != null) {
+            history.add(taskSummaryMessage);
+        }
         List<ChatMessage> taskHistory = toChatMessages(taskMessages, ctx.getUserMessageId());
-        ctx.setHistory(CollUtil.isNotEmpty(taskHistory) ? taskHistory : List.of());
+        if (CollUtil.isNotEmpty(taskHistory)) {
+            history.addAll(taskHistory);
+        }
+        ctx.setHistory(CollUtil.isNotEmpty(history) ? history : List.of());
     }
     // 把用户问题和上下文对话历史，调用大模型重写，返回重写后的主问题和子问题
     private void rewriteQuery(StreamChatContext ctx) {
@@ -275,6 +283,19 @@ public class StreamChatPipeline {
             return null;
         }
         return new ChatMessage(role, message.getContent());
+    }
+
+    /**
+     * 将任务摘要转换为对话历史中的系统消息，便于后续改写和回答继承任务级背景。
+     *
+     * @param conversationTask 会话工作记忆任务
+     * @return 任务摘要消息，不存在摘要时返回 null
+     */
+    private ChatMessage buildTaskSummaryMessage(ConversationTaskDO conversationTask) {
+        if (conversationTask == null || StrUtil.isBlank(conversationTask.getStateJson())) {
+            return null;
+        }
+        return ChatMessage.system("当前任务摘要：" + conversationTask.getStateJson());
     }
 
     /**
