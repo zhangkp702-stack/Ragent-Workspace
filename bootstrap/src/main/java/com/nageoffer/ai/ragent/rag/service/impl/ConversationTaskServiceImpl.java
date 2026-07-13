@@ -250,16 +250,12 @@ public class ConversationTaskServiceImpl implements ConversationTaskService {
             return false;
         }
         Date now = new Date();
-        int updated = conversationTaskMapper.update(
-                null,
-                Wrappers.lambdaUpdate(ConversationTaskDO.class)
-                        .eq(ConversationTaskDO::getConversationTaskId, conversationTaskId)
-                        .eq(ConversationTaskDO::getConversationId, conversationId)
-                        .eq(ConversationTaskDO::getUserId, userId)
-                        .eq(ConversationTaskDO::getDeleted, 0)
-                        .set(ConversationTaskDO::getStateJson, stateJson)
-                        .set(ConversationTaskDO::getLastActiveTime, now)
-                        .set(ConversationTaskDO::getUpdateTime, now)
+        int updated = conversationTaskMapper.updateStateJson(
+                conversationTaskId,
+                conversationId,
+                userId,
+                stateJson,
+                now
         );
         return updated > 0;
     }
