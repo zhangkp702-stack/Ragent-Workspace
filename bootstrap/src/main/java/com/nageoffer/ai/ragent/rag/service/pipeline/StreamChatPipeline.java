@@ -95,6 +95,7 @@ public class StreamChatPipeline {
     public void execute(StreamChatContext ctx) {
         // 先保存当前用户消息，为后续 task turn 关联提供 messageId
         persistUserMessage(ctx);
+        // 加载历史上下文
         loadWorkingMemory(ctx);
         // 重写用户问题 调用大模型  chat
         rewriteQuery(ctx);
